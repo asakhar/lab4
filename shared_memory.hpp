@@ -45,7 +45,7 @@ public:
         mmap(NULL, m_size * sizeof(T), protection, visibility, m_fd, 0));
     if (m_pointer == reinterpret_cast<T *>(-1)) {
       printError("Unable to create shared memory", errno);
-      exit(1);
+      _exit(1);
     }
   }
   T &operator[](size_t idx) { return m_pointer[idx]; }
@@ -54,11 +54,11 @@ public:
   ~SharedMem() {
     if (munmap(reinterpret_cast<void *>(m_pointer), m_size * sizeof(T)) == -1) {
       printError("Unable to destroy shared memory", errno);
-      exit(1);
+      _exit(1);
     }
     if (close(m_fd) == -1) {
       printError("Failed to close shared file", errno);
-      exit(1);
+      _exit(1);
     }
   }
 
