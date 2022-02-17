@@ -1,57 +1,48 @@
-#include "shared_memory.hpp"
+#include <unistd.h>
+
 #include <cstdlib>
-#include "errors.hpp"
 #include <fstream>
 #include <ios>
+#include <memory>
+#include <new>
+#include <sstream>
 
-int main(int argc, char *argv[], char * /*env*/[]) {
-  if (argc < 7) {
+#include "errors.hpp"
+#include "shared_memory.hpp"
+
+int main(int argc, char const *argv[]) {
+  if (argc < 2) {
     _exit(1);
   }
-  auto fileName = argv[1];
-  int fd;
+  int in, out;
   {
-    char *end = nullptr;
-    fd = std::strtol(argv[2], &end, 10);
-    if(end != strend(argv[2]) || fd < 3) {
-      _exit(1);
-    }
+    std::stringstream args(argv[1]);
+    args >> in;
+    args.get();
+    args >> out;
   }
-  size_t blockSize;
-  {
-    char *end = nullptr;
-    blockSize = std::strtoul(argv[3], &end, 10);
-    if(end != strend(argv[3]) && blockSize < 1) {
-      _exit(1);
-    }
-  }
-  size_t offset;
-  {
-    char *end = nullptr;
-    offset = std::strtoul(argv[4], &end, 10);
-    if(end != strend(argv[4])) {
-      _exit(1);
-    }
-  }
-  size_t idx;
-  {
-    char *end = nullptr;
-    idx = std::strtoul(argv[5], &end, 10);
-    if(end != strend(argv[5]) && blockSize < 1) {
-      _exit(1);
-    }
-  }
-  if(strlen(argv[6]) != 1)
+  if (in < 3 || out < 3) {
     _exit(1);
-  char searchingFor = argv[6][0];
-  SharedMem<size_t> sharedMem(fd);
-  std::ifstream file{fileName};
+  }
+  auto fileNameSize = readObject<size_t>(in);
+  if (fileNameSize < 1) _exit(1);
+  auto fileNamePtr = readObject<char>(in, fileNameSize);
+  if(!fileNamePtr) _exit(1);
+  auto blockSize = readObject<size_t>(in);
+  if(blockSize < 1) _exit(1);
+  auto searchingFor = readObject<char>(in);
+  if(!searchingFor) _exit(1);
+  auto offset = readObject<size_t>(in);
+  std::ifstream file{fileNamePtr.get()};
+  if(!file.is_open()) _exit(1);
   file.seekg(offset, std::ios_base::beg);
-  for(size_t i = 0; i < blockSize; ++i) {
+  size_t result = 0;
+  for (size_t i = 0; i < blockSize; ++i) {
     auto character = file.get();
-    if(character == searchingFor)
-      ++sharedMem[idx];
+    if (character == searchingFor) ++result;
   }
+  writeObject(out, result);
+  close(in);
+  close(out);
   _exit(0);
-  return 0;
 }
