@@ -1,10 +1,3 @@
-#include <sched.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
-#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -13,11 +6,12 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <windows.h>
 
 #include "errors.hpp"
 #include "shared_memory.hpp"
 
-constexpr char const *processorPath = "./processor";
+constexpr char const *processorPath = "Debug/processor.exe";
 
 #define SV(str) str, strlen(str)
 
@@ -28,75 +22,66 @@ void usage(int argc, char *argv[]) {
 }
 
 struct process {
-  pid_t pid = -1;
-  int pipeFwd = -1;
-  int pipeBck = -1;
+  PROCESS_INFORMATION pi{INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 0, 0};
+  STARTUPINFO si{};
+  HANDLE pipe = INVALID_HANDLE_VALUE;
+  static const std::string pipeName;
+  static size_t pipeIdx;
   process() = default;
   explicit process(char const *program) {
-    int pipefd1[2];
-    if (pipe(pipefd1) == -1) {
-      printError("Cannot create pipe", errno);
+    DWORD const access = PIPE_ACCESS_DUPLEX;
+    DWORD const pipeMode = PIPE_TYPE_BYTE | PIPE_READMODE_BYTE |
+                           PIPE_WAIT; //| FILE_FLAG_FIRST_PIPE_INSTANCE ;
+    auto pipeNameIdx = pipeName + std::to_string(pipeIdx++);
+    if ((pipe = CreateNamedPipe(TEXT(pipeNameIdx.c_str()), access, pipeMode, 1,
+                                1024, 1024, NMPWAIT_USE_DEFAULT_WAIT, NULL)) ==
+        INVALID_HANDLE_VALUE) {
+      printError("Cannot create pipe", GetLastError());
       exit(1);
     }
-    if (fcntl(pipefd1[0], F_SETFL,
-              (fcntl(pipefd1[0], F_GETFL) & ~O_NONBLOCK)) == -1) {
-      printError("Failed to unset O_NONBLOCK to pipe", errno);
+    PROCESS_INFORMATION pit{};
+    auto childArgv = std::string(program) + " " + pipeNameIdx;
+    auto childArgvPtr = std::make_unique<char[]>(childArgv.size() + 1);
+    memcpy(childArgvPtr.get(), childArgv.c_str(), childArgv.size() + 1);
+    if (!CreateProcess(program, childArgvPtr.get(), NULL, NULL, TRUE, 0, NULL,
+                       NULL, &si, &pit)) {
+      printError("CreateProcess call resulted in error", GetLastError());
       exit(1);
     }
-    pipeFwd = pipefd1[1];
-    int pipefd2[2];
-    if (pipe(pipefd2) == -1) {
-      printError("Cannot create pipe", errno);
+    if (!ConnectNamedPipe(pipe, NULL)) {
+      printError("Failed to connect to pipe", GetLastError());
       exit(1);
     }
-    if (fcntl(pipefd2[0], F_SETFL,
-              (fcntl(pipefd2[0], F_GETFL) & ~O_NONBLOCK)) == -1) {
-      printError("Failed to unset O_NONBLOCK to pipe", errno);
-      exit(1);
-    }
-    pipeBck = pipefd2[0];
-    pid = fork();
-    if (pid != 0) {
-      close(pipefd1[0]);
-      close(pipefd2[1]);
-    } else {
-      close(pipefd1[1]);
-      close(pipefd2[0]);
-      auto pipefdstr =
-          std::to_string(pipefd1[0]) + "|" + std::to_string(pipefd2[1]);
-      char const *const argv[3]{program, pipefdstr.c_str(), nullptr};
-      if (execve(program, const_cast<char *const *>(argv), nullptr) == -1) {
-        printError("Execve call resulted in error", errno);
-        exit(1);
-      }
-    }
+    pi = pit;
   }
-  process(process &&move)
-      : pipeFwd{move.pipeFwd}, pipeBck{move.pipeBck}, pid{move.pid} {
-    move.pipeFwd = -1;
-    move.pipeBck = -1;
-    move.pid = -1;
+  process(process &&move) : pipe{move.pipe}, pi{move.pi}, si{move.si} {
+    move.pipe = INVALID_HANDLE_VALUE;
+    move.pi = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 0, 0};
+    move.si = {};
   }
   process(process const &) = delete;
   process &operator=(process &&move) {
     endProc();
-    pipeFwd = move.pipeFwd;
-    pipeBck = move.pipeBck;
-    pid = move.pid;
-    move.pipeFwd = -1;
-    move.pipeBck = -1;
-    move.pid = -1;
+    pipe = move.pipe;
+    pi = move.pi;
+    si = move.si;
+    move.pipe = INVALID_HANDLE_VALUE;
+    move.pi = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 0, 0};
+    move.si = {};
     return *this;
   }
   process &operator=(process const &) = delete;
   void endProc() {
-    if (pipeFwd != -1) close(pipeFwd);
-    if (pipeBck != -1) close(pipeBck);
-    int _;
-    if (pid != -1) waitpid(pid, &_, 0);
+    if (pipe != INVALID_HANDLE_VALUE)
+      DisconnectNamedPipe(pipe);
+    if (pi.hProcess != INVALID_HANDLE_VALUE)
+      WaitForSingleObject(pi.hProcess, INFINITE);
   }
   ~process() { endProc(); }
 };
+
+const std::string process::pipeName = "\\\\.\\pipe\\dunderFile";
+size_t process::pipeIdx = 0;
 
 int main(int argc, char *argv[], char * /*env*/[]) {
   if (argc < 4) {
@@ -129,7 +114,7 @@ int main(int argc, char *argv[], char * /*env*/[]) {
       usage(argc, argv);
     }
   }
-  if (processorsQuantity > (fileSize >> 1)) {
+  if (processorsQuantity > static_cast<size_t>(fileSize >> 1)) {
     std::cout
         << "Quantity of processes you entered (" << processorsQuantity
         << ") exceeds half of the amount of data (" << (fileSize >> 1)
@@ -143,22 +128,22 @@ int main(int argc, char *argv[], char * /*env*/[]) {
     size_t i = 0;
     for (; i < processorsQuantity - 1; ++i) {
       processes[i] = process(processorPath);
-      writeObject(processes[i].pipeFwd, strlen(argv[1]) + 1);
-      writeObject(processes[i].pipeFwd, SV(argv[1]) + 1);
-      writeObject(processes[i].pipeFwd, blockSize);
-      writeObject(processes[i].pipeFwd, character);
-      writeObject(processes[i].pipeFwd, i * blockSize);
+      writeObject(processes[i].pipe, strlen(argv[1]) + 1);
+      writeObject(processes[i].pipe, SV(argv[1]) + 1);
+      writeObject(processes[i].pipe, blockSize);
+      writeObject(processes[i].pipe, character);
+      writeObject(processes[i].pipe, i * blockSize);
     }
     processes[i] = process(processorPath);
-    writeObject(processes[i].pipeFwd, strlen(argv[1]) + 1);
-    writeObject(processes[i].pipeFwd, SV(argv[1]) + 1);
-    writeObject(processes[i].pipeFwd, lastBlockSize);
-    writeObject(processes[i].pipeFwd, character);
-    writeObject(processes[i].pipeFwd, i * blockSize);
+    writeObject(processes[i].pipe, strlen(argv[1]) + 1);
+    writeObject(processes[i].pipe, SV(argv[1]) + 1);
+    writeObject(processes[i].pipe, lastBlockSize);
+    writeObject(processes[i].pipe, character);
+    writeObject(processes[i].pipe, i * blockSize);
   }
   size_t total = 0;
   for (auto &proc : processes) {
-    total += readObject<size_t>(proc.pipeBck);
+    total += readObject<size_t>(proc.pipe);
   }
   std::cout << "Result for given file is: " << total << "\n";
   return 0;
