@@ -5,11 +5,27 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Launch",
+      "program": "${workspaceFolder}/target/debug/lab",
+      "args": [
+        "build/file.txt",
+        "16",
+        "a"
+      ],
+      "cwd": "${workspaceFolder}"
+    },
+    {
       "name": "(gdb) Launch",
       "type": "cppdbg",
       "request": "launch",
       "program": "${command:cmake.launchTargetPath}",
-      "args": ["file.txt", "2", "g"],
+      "args": [
+        "file.txt",
+        "2",
+        "g"
+      ],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/build",
       "environment": [],
