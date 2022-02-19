@@ -13,7 +13,7 @@ macro_rules! error_and_exit {
 }
 
 fn error_and_exit_internal(msg: &String, print_usage: bool) -> ! {
-  eprintln!("Error: {}", msg.to_string());
+  eprintln!("Error: {}", msg);
   if print_usage {
     usage();
   }
