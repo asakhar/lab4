@@ -1,7 +1,11 @@
 use std::convert::TryInto;
 use std::env;
 use std::fs;
+use std::io::Read;
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process;
+use std::sync::{mpsc::channel, Arc, Mutex};
+use std::thread;
 
 macro_rules! error_and_exit {
   ($msg:expr, $print_usage:expr) => {
@@ -47,6 +51,32 @@ fn create_process(processor_name: &String, args: &Vec<String>) -> process::Child
   }
 }
 
+fn handle_client(mut stream: TcpStream, result : Arc<Mutex<u64>>) {
+  let mut data = [0u8; 8];
+  let mut read = 0usize;
+  while match stream.read(&mut data[read..]) {
+    Ok(size) => {
+      read += size;
+      read != data.len()
+    }
+    Err(_) => {
+      println!(
+        "An error occurred, terminating connection with {}",
+        stream.peer_addr().unwrap()
+      );
+      stream.shutdown(Shutdown::Both).unwrap();
+      false
+    }
+  } {}
+  if read == data.len() {
+    let mut result = match result.lock() {
+      Err(_why) => error_and_exit!("Failed to lock."),
+      Ok(res) => res
+    };
+    *result += u64::from_be_bytes(data);
+  }
+}
+
 fn main() {
   let processor_name = "target/debug/processor".to_string();
   let args: Vec<String> = env::args().collect();
@@ -76,6 +106,53 @@ fn main() {
   }
   let block_size = file_size / processors_quantity;
   let last_block_size = file_size - block_size * (processors_quantity - 1);
+
+  let listener = match TcpListener::bind("0.0.0.0:3333") {
+    Err(_why) => error_and_exit!("Failed to bind to port."),
+    Ok(res) => res,
+  };
+
+  let finished_counter = Arc::new(Mutex::new(0u64));
+  let result = Arc::new(Mutex::new(0u64));
+  let (tx, rx) = channel();
+
+  for stream in listener.incoming() {
+    match stream {
+      Ok(stream) => {
+        println!(
+          "New connection: {}",
+          match stream.peer_addr() {
+            Err(_why) => error_and_exit!("Failed to resolve peer address."),
+            Ok(res) => res,
+          }
+        );
+        let (finished_counter, result, tx) = (
+          Arc::clone(&finished_counter),
+          Arc::clone(&result),
+          tx.clone(),
+        );
+        thread::spawn(move || {
+          // connection succeeded
+          handle_client(stream, result);
+          let mut finished_counter = match finished_counter.lock() {
+            Err(_why) => error_and_exit!("Cannot lock data."),
+            Ok(res) => res,
+          };
+          *finished_counter += 1;
+          if *finished_counter == processors_quantity {
+            tx.send(()).unwrap();
+          }
+        });
+      }
+      Err(e) => {
+        println!("Error: {}", e);
+        /* connection failed */
+      }
+    }
+  }
+  if rx.recv().is_err() {
+    error_and_exit!("Sender is unavaliable.");
+  };
 
   let mut processes = Vec::new();
 
