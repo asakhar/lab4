@@ -7,6 +7,10 @@ edition = "2021"
 
 [dependencies]
 
+[lib]
+name = "cluster"
+path = "cluster.rs"
+
 [[bin]]
 name = "server"
 path = "server.rs"
