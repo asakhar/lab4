@@ -1,13 +1,10 @@
-use std::error::Error;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::process;
 use std::sync::{
   atomic::{AtomicU64, Ordering},
-  mpsc::channel,
   Arc, Mutex,
 };
-use std::thread;
 use std::time::Duration;
 
 macro_rules! error_and_exit {
@@ -26,11 +23,11 @@ struct Task {
   result: Option<Vec<u8>>,
   data: Vec<u8>,
 }
-static TASK_ID: AtomicU64 = AtomicU64::new(0);
 impl Task {
   fn new(data: Vec<u8>) -> Task {
+    static TASK_ID: AtomicU64 = AtomicU64::new(0);
     let uid = TASK_ID.load(Ordering::Acquire);
-    TASK_ID.store(0, Ordering::Release);
+    TASK_ID.store(uid + 1, Ordering::Release);
     Task {
       id: uid,
       result: None,
@@ -65,17 +62,18 @@ struct ClusterCoordinator {
   tasks: Arc<TasksContainer>,
   program: Arc<String>,
   thread_handle: Option<std::thread::JoinHandle<()>>,
+  is_terminated: Arc<Mutex<bool>>,
 }
 
 #[allow(dead_code)]
-enum HostCommands {
-  Execute = 0,
-  Wait = 1,
+enum HostCommand {
+  Wait = 0,
+  Execute = 1,
   Terminate = 2,
 }
 
 fn write_data(stream: &mut TcpStream, data: &[u8], program: &[u8]) -> bool {
-  if match stream.write(&program.len().to_be_bytes()) {
+  if match stream.write(&program.len().to_le_bytes()) {
     Err(why) => {
       println!("Error writing program length to host: {}", why);
       0
@@ -97,7 +95,7 @@ fn write_data(stream: &mut TcpStream, data: &[u8], program: &[u8]) -> bool {
     println!("Error occured.");
     return false;
   }
-  if match stream.write(&data.len().to_be_bytes()) {
+  if match stream.write(&data.len().to_le_bytes()) {
     Err(why) => {
       println!("Error writing data length to host: {}", why);
       0
@@ -128,7 +126,7 @@ fn read_results(stream: &mut TcpStream) -> Option<Vec<u8>> {
     Err(_why) => return None,
     Ok(()) => {}
   };
-  let mut buf = vec![0u8; usize::from_be_bytes(size_buf)];
+  let mut buf = vec![0u8; usize::from_le_bytes(size_buf)];
   match stream.read_exact(&mut buf) {
     Err(_why) => return None,
     Ok(()) => {}
@@ -136,15 +134,21 @@ fn read_results(stream: &mut TcpStream) -> Option<Vec<u8>> {
   Some(buf)
 }
 
-fn handle_client(mut stream: TcpStream, tasks: Arc<TasksContainer>, program: Arc<String>) {
+fn handle_client(mut stream: TcpStream, tasks: Arc<TasksContainer>, program: Arc<String>, is_terminated: Arc<Mutex<bool>>) {
+  let is_terminated = is_terminated.lock().unwrap();
+  if *is_terminated {
+    stream.write_all(&[HostCommand::Terminate as u8]).unwrap_or_default();
+    return;
+  }
+  drop(is_terminated);
   let mut idle_tasks = tasks.idle_tasks.lock().unwrap();
   let mut task = match idle_tasks.pop() {
     Some(val) => {
-      stream.write(&[HostCommands::Execute as u8]).unwrap();
+      stream.write_all(&[HostCommand::Execute as u8]).unwrap_or_default();
       val
     }
     None => {
-      stream.write(&[HostCommands::Wait as u8]).unwrap();
+      stream.write_all(&[HostCommand::Wait as u8]).unwrap_or_default();
       return;
     }
   };
@@ -157,7 +161,7 @@ fn handle_client(mut stream: TcpStream, tasks: Arc<TasksContainer>, program: Arc
     };
     stream
       .set_read_timeout(Some(Duration::from_secs(120)))
-      .unwrap();
+      .unwrap_or_default();
     task.result = read_results(&mut stream);
     match task.result {
       None => {
@@ -178,9 +182,11 @@ impl ClusterCoordinator {
       tasks: Arc::new(TasksContainer::new()),
       program: Arc::new(program.clone()),
       thread_handle: None,
+      is_terminated: Arc::new(Mutex::new(false)),
     };
     let tasks = Arc::clone(&result.tasks);
     let program = Arc::clone(&result.program);
+    let is_terminated = Arc::clone(&result.is_terminated);
     result.thread_handle = Some(std::thread::spawn(move || {
       let address = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), port);
       let listener = match TcpListener::bind(address) {
@@ -190,14 +196,14 @@ impl ClusterCoordinator {
       for stream in listener.incoming() {
         match stream {
           Ok(stream) => {
-            println!(
-              "New connection: {}",
-              match stream.peer_addr() {
-                Err(why) => error_and_exit!("Failed to resolve peer address.", why),
-                Ok(res) => res,
-              }
-            );
-            handle_client(stream, Arc::clone(&tasks), Arc::clone(&program));
+            // println!(
+            //   "New connection: {}",
+            //   match stream.peer_addr() {
+            //     Err(why) => error_and_exit!("Failed to resolve peer address.", why),
+            //     Ok(res) => res,
+            //   }
+            // );
+            handle_client(stream, Arc::clone(&tasks), Arc::clone(&program), Arc::clone(&is_terminated));
           }
           Err(e) => {
             println!("Error: {}", e);
@@ -220,7 +226,7 @@ impl ClusterCoordinator {
   }
   fn extract_computed(&mut self) -> Vec<Task> {
     let mut succeeded_tasks = self.tasks.succeeded_tasks.lock().unwrap();
-    let results = (*succeeded_tasks).clone();
+    let results = succeeded_tasks.clone();
     *succeeded_tasks = Vec::new();
     results
   }
@@ -252,8 +258,23 @@ fn usage() {
   process::exit(1);
 }
 
+fn read_n<R>(reader: &mut R, bytes_to_read: u64) -> Vec<u8>
+where
+  R: Read,
+{
+  let mut buf = vec![];
+  let mut chunk = reader.take(bytes_to_read);
+  let n = match chunk.read_to_end(&mut buf) {
+    Err(_why) => error_and_exit_app!("Failed to read from file.", true),
+    Ok(res) => res,
+  };
+  if bytes_to_read as usize != n {
+    error_and_exit_app!("Not enought bytes to read from file.");
+  }
+  buf
+}
+
 fn main() {
-  // let processor_name = "target/debug/processor".to_string();
   let args: Vec<String> = std::env::args().collect();
   if args.len() < 4 {
     error_and_exit_app!("Invalid number of arguments.", true);
@@ -261,14 +282,14 @@ fn main() {
   if args[3].len() != 1 {
     error_and_exit_app!("Invalid argument value for character to count.", true);
   }
-  let character_to_count = args[3].to_string();
+  let character_to_count = args[3].chars().nth(0).unwrap();
 
   let file_name = args[1].to_string();
   let mut processors_quantity = match args[2].parse::<u64>() {
     Err(_why) => error_and_exit_app!("Invalid argument value for number of processes.", true),
     Ok(res) => res,
   };
-  let file_size = match std::fs::metadata(file_name.clone()) {
+  let file_size = match std::fs::metadata(&file_name) {
     Err(_why) => error_and_exit_app!("Failed to open file.", true),
     Ok(metadata) => metadata.len(),
   };
@@ -282,12 +303,55 @@ fn main() {
   let block_size = file_size / processors_quantity;
   let last_block_size = file_size - block_size * (processors_quantity - 1);
 
-  todo!("Add program code for host");
-  let mut coord = ClusterCoordinator::new("".to_string(), 62552);
-  todo!("Create tasks for hosts");
-  coord.add_task("sdgfds".as_bytes().to_vec());
+  let mut file = match std::fs::File::open(file_name) {
+    Err(_why) => error_and_exit_app!("Failed to open file.", true),
+    Ok(file) => file,
+  };
+
+  let program = "
+  #include <stdio.h>
+
+  int main() {
+    unsigned long size;
+    fread(&size, sizeof(unsigned long), 1, stdin);
+    char data[size];
+    fread(data, 1, size, stdin);
+    char* string = data+1;
+    char to_find = data[0];
+    unsigned long cnt = 0;
+    for(unsigned long i = 0; i < size; ++i) {
+      if(string[i] == to_find)
+        ++cnt;
+    }
+    fwrite(&cnt, sizeof(unsigned long), 1, stdout);
+    return 0;
+  }
+  ";
+  let mut coord = ClusterCoordinator::new(program.to_string(), 65535);
+  let mut tasks = Vec::new();
+  for _ in 0..(processors_quantity - 1) {
+    let mut buf = read_n(&mut file, block_size);
+    buf.insert(0, character_to_count as u8);
+    tasks.push(coord.add_task(buf));
+    // println!("Task #{}", tasks.last().unwrap());
+  }
+  let mut buf = read_n(&mut file, last_block_size);
+  buf.insert(0, character_to_count as u8);
+  tasks.push(coord.add_task(buf));
+
   let mut extracted = Vec::new();
   while extracted.len() != processors_quantity as usize {
     extracted.append(&mut coord.extract_computed());
   }
+  let mut cnt = 0u64;
+  for task in extracted {
+    let res = &task.result.unwrap()[..];
+    cnt += u64::from_le_bytes(match res.try_into() {
+      Ok(res) => res,
+      Err(_) => error_and_exit_app!("Error converting result to u64"),
+    });
+  }
+  println!("Result is: {}", cnt);
+  *coord.is_terminated.lock().unwrap() = true;
+  std::thread::sleep(Duration::from_micros(500));
 }
