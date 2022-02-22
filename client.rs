@@ -61,11 +61,16 @@ impl WriteSizedExt for std::net::TcpStream {
 }
 
 fn compile(program: &Vec<u8>) -> Result<String, std::io::Error> {
-  static EXEC_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-  let mut executable_name = "./executable".to_string();
-  let id = EXEC_ID.load(std::sync::atomic::Ordering::Acquire);
-  executable_name.push_str(&id.to_string());
-  EXEC_ID.store(id + 1, std::sync::atomic::Ordering::Release);
+  static EXEC_BASE: &str = "./executable";
+  let mut executable_name: String = EXEC_BASE.to_string();
+  {
+    let mut n = 0u64;
+    while std::path::Path::new(&executable_name).exists() {
+      executable_name = EXEC_BASE.to_string();
+      executable_name.push_str(&n.to_string());
+      n += 1;
+    }
+  }
   let mut child = match std::process::Command::new("gcc")
     .args(["-o", &executable_name, "-xc", "-"])
     .stdin(std::process::Stdio::piped())
@@ -118,7 +123,7 @@ fn execute(executable: &String, data: &Vec<u8>) -> Result<Vec<u8>, std::io::Erro
     Err(why) => return Err(why),
     Ok(res) => res,
   };
-  Ok(output.stdout)
+  return Ok(output.stdout);
 }
 
 fn main() {
@@ -191,8 +196,8 @@ fn main() {
           Err(why) => eprintln!("Error writing to host: {}", why),
         }
       }
-      Err(e) => {
-        eprintln!("Failed to connect: {}", e);
+      Err(_e) => {
+        // eprintln!("Failed to connect: {}", e);
       }
     }
   }
