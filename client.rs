@@ -139,7 +139,7 @@ impl std::ops::FnOnce<()> for ClientReceiver {
 impl std::ops::FnMut<()> for ClientReceiver {
   extern "rust-call" fn call_mut(&mut self, _: ()) -> Self::Output {
     loop {
-      std::thread::sleep(std::time::Duration::from_micros(500));
+      // std::thread::sleep(std::time::Duration::from_micros(500));
       if let Ok(mut stream) = TcpStream::connect(&self.address) {
         let mut host_command_buf = [0u8; 1];
         if let Err(why) = stream.read_exact(&mut host_command_buf) {

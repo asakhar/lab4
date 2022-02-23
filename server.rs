@@ -124,15 +124,17 @@ fn main() {
   let mut finished = 0u64;
   while finished != processors_quantity {
     if let Some(extracted) = coord.extract_computed() {
-      let mut percentage = finished * 100 / processors_quantity;
-      print!("{}", "\r".repeat((percentage + 4) as usize));
-      finished += extracted.len() as u64;
-      percentage = finished * 100 / processors_quantity;
-      print!(
-        "{:3}% {}",
-        percentage,
-        "\u{25AE}".repeat(percentage as usize)
-      );
+      {
+        let mut percentage = finished * 100 / processors_quantity;
+        print!("{}", "\r".repeat((percentage + 4) as usize));
+        finished += extracted.len() as u64;
+        percentage = finished * 100 / processors_quantity;
+        cyan!(
+          "{:3}% {}",
+          percentage,
+          "\u{2588}".repeat(percentage as usize)
+        );
+      }
       for task in extracted {
         let res: &[u8] = &task.result.unwrap();
         cnt += u64::from_le_bytes(match res.try_into() {
