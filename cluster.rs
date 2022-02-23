@@ -1,6 +1,7 @@
+mod colorprint;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process;
+use std::process::exit;
 use std::sync::{
   atomic::{AtomicBool, AtomicUsize, Ordering},
   Arc, Mutex,
@@ -14,8 +15,8 @@ macro_rules! error_and_exit {
 }
 
 fn error_and_exit_internal(msg: &String, err: &String) -> ! {
-  eprintln!("Error: {}: {}", msg, err);
-  process::exit(1);
+  redln!("Error: {}: {}", msg, err);
+  exit(1);
 }
 type Uid = usize;
 type Guid = usize;
@@ -28,10 +29,10 @@ pub struct Task {
 }
 
 impl Task {
-  pub fn new(data: Vec<u8>, id: Uid) -> Task {
+  pub fn new(data: Vec<u8>, id: Uid) -> Self {
     static TASK_ID: AtomicUsize = AtomicUsize::new(0);
     let guid = TASK_ID.fetch_add(1, Ordering::Relaxed);
-    Task {
+    Self {
       guid: guid,
       id: id,
       result: None,
@@ -65,12 +66,16 @@ impl TasksContainer {
       Ok(res) => res,
     };
     idle_tasks.push(task);
+    // blueln!("Task {} pushed to idle.", idle_tasks.last().unwrap().id);
   }
   fn take_idle(&self) -> Option<Task> {
     let mut idle_tasks = match self.idle_tasks.lock() {
       Err(why) => error_and_exit!("Error locking idle tasks", why),
       Ok(res) => res,
     };
+    // if let Some(res) = idle_tasks.last() {
+    //   blueln!("Task {} taken from idle.", res.id)
+    // };
     idle_tasks.pop()
   }
   fn push_succeeded(&self, task: Task) {
@@ -78,20 +83,25 @@ impl TasksContainer {
       Err(why) => error_and_exit!("Error locking succeeded tasks", why),
       Ok(res) => res,
     };
-    match succeeded_tasks.take() {
-      Some(mut res) => res.push(task),
-      None => {
-        let mut res = Vec::new();
-        res.push(task);
-        *succeeded_tasks = Some(res);
-      }
+    if let None = *succeeded_tasks {
+      *succeeded_tasks = Some(Vec::new());
     }
+    succeeded_tasks.as_mut().unwrap().push(task);
+    // blueln!(
+    //   "Task {} pushed to succeeded.",
+    //   succeeded_tasks.as_ref().unwrap().last().unwrap().id
+    // );
   }
   fn take_succeeded(&self) -> Option<Vec<Task>> {
     let mut succeeded_tasks = match self.succeeded_tasks.lock() {
       Err(why) => error_and_exit!("Error locking succeeded tasks", why),
       Ok(res) => res,
     };
+    // if let Some(tasks) = succeeded_tasks.as_ref() {
+    //   for task in tasks {
+    //     blueln!("Task {} taken from succeeded.", task.id);
+    //   }
+    // }
     succeeded_tasks.take()
   }
   fn get_new_uid(&self) -> Uid {
@@ -106,7 +116,6 @@ pub struct ClusterCoordinator {
   is_terminated: Arc<AtomicBool>,
 }
 
-#[allow(dead_code)]
 enum HostCommand {
   Wait = 0,
   Execute = 1,
@@ -114,47 +123,41 @@ enum HostCommand {
 }
 
 fn write_data(stream: &mut TcpStream, data: &[u8], program: &[u8]) -> bool {
-  match stream.write_all(&program.len().to_le_bytes()) {
-    Err(why) => {
-      eprintln!("Error writing program length to host: {}", why);
-      return false;
-    }
-    Ok(()) => (),
+  if let Err(why) = stream.write_all(&program.len().to_le_bytes()) {
+    redln!("Error writing program length to host: {}", why);
+    return false;
   }
-  match stream.write_all(program) {
-    Err(why) => {
-      eprintln!("Error writing program to host: {}", why);
-      return false;
-    }
-    Ok(()) => (),
+  if let Err(why) = stream.write_all(program) {
+    redln!("Error writing program to host: {}", why);
+    return false;
   }
-  match stream.write_all(&data.len().to_le_bytes()) {
-    Err(why) => {
-      eprintln!("Error writing data length to host: {}", why);
-      return false;
-    }
-    Ok(()) => (),
+  if let Err(why) = stream.write_all(&data.len().to_le_bytes()) {
+    redln!("Error writing data length to host: {}", why);
+    return false;
   }
-  match stream.write_all(&data) {
-    Err(why) => {
-      eprintln!("Error writing data to host: {}", why);
-      return false;
-    }
-    Ok(()) => (),
+  if let Err(why) = stream.write_all(&data) {
+    redln!("Error writing data to host: {}", why);
+    return false;
   }
   true
 }
 
+macro_rules! sizeof {
+  ($t:ty) => {
+    std::mem::size_of::<$t>()
+  };
+}
+
 fn read_results(stream: &mut TcpStream) -> Option<Vec<u8>> {
-  let mut size_buf = [0u8; 8];
-  match stream.read_exact(&mut size_buf) {
-    Err(_why) => return None,
-    Ok(()) => {}
+  let mut size_buf = [0u8; sizeof!(usize)];
+  if let Err(why) = stream.read_exact(&mut size_buf) {
+    redln!("Error reading size from stream: {}", why);
+    return None;
   };
   let mut buf = vec![0u8; usize::from_le_bytes(size_buf)];
-  match stream.read_exact(&mut buf) {
-    Err(_why) => return None,
-    Ok(()) => {}
+  if let Err(why) = stream.read_exact(&mut buf) {
+    redln!("Error reading results from stream: {}", why);
+    return None;
   };
   Some(buf)
 }
@@ -202,10 +205,10 @@ fn handle_client(
 }
 
 impl ClusterCoordinator {
-  pub fn new(program: String, port: u16) -> ClusterCoordinator {
+  pub fn new(program: &str, port: u16) -> ClusterCoordinator {
     let mut result = ClusterCoordinator {
       tasks: Arc::new(TasksContainer::new()),
-      program: Arc::new(program.clone()),
+      program: Arc::new(program.to_string()),
       thread_handle: None,
       is_terminated: Arc::new(AtomicBool::new(false)),
     };
@@ -215,19 +218,12 @@ impl ClusterCoordinator {
     result.thread_handle = Some(std::thread::spawn(move || {
       let address = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), port);
       let listener = match TcpListener::bind(address) {
-        Err(why) => error_and_exit!("Failed to bind to port.", why),
+        Err(why) => error_and_exit!("Failed to bind to port", why),
         Ok(res) => res,
       };
       for stream in listener.incoming() {
         match stream {
           Ok(stream) => {
-            // println!(
-            //   "New connection: {}",
-            //   match stream.peer_addr() {
-            //     Err(why) => error_and_exit!("Failed to resolve peer address.", why),
-            //     Ok(res) => res,
-            //   }
-            // );
             handle_client(
               stream,
               Arc::clone(&tasks),
@@ -235,9 +231,8 @@ impl ClusterCoordinator {
               Arc::clone(&is_terminated),
             );
           }
-          Err(e) => {
-            println!("Error: {}", e);
-            /* connection failed */
+          Err(why) => {
+            redln!("Error: {}", why);
           }
         }
       }

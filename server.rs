@@ -4,18 +4,19 @@ use std::io::Read;
 use std::process::exit;
 use std::thread::sleep;
 use std::time::Duration;
+mod colorprint;
 
 macro_rules! error_and_exit_app {
   ($msg:expr, $print_usage:expr) => {
-    error_and_exit_internal_app(&$msg.to_string(), $print_usage)
+    error_and_exit_internal_app($msg, $print_usage)
   };
   ($msg:expr) => {
-    error_and_exit_internal_app(&$msg.to_string(), false)
+    error_and_exit_internal_app($msg, false)
   };
 }
 
-fn error_and_exit_internal_app(msg: &String, print_usage: bool) -> ! {
-  eprintln!("Error: {}", msg);
+fn error_and_exit_internal_app(msg: &str, print_usage: bool) -> ! {
+  redln!("Error: {}", msg);
   if print_usage {
     usage();
   }
@@ -79,7 +80,7 @@ fn main() {
     error_and_exit_app!("Too small file.");
   }
   if processors_quantity > (file_size >> 1) {
-    println!("Warning: Quantity of processes specified ({}) exceeds half of the amount of information in file ({}).\nThe actual number of processes will be reduced...", processors_quantity, file_size>>1);
+    yellowln!("Warning: Quantity of processes specified ({}) exceeds half of the amount of information in file ({}).\nThe actual number of processes will be reduced...", processors_quantity, file_size>>1);
     processors_quantity = file_size >> 1;
   }
   let block_size = file_size / processors_quantity;
@@ -98,45 +99,50 @@ fn main() {
     fread(&size, sizeof(unsigned long), 1, stdin);
     char data[size];
     fread(data, 1, size, stdin);
-    char* string = data+1;
-    char to_find = data[0];
+    char to_find = data[size-1];
     unsigned long cnt = 0;
     for(unsigned long i = 0; i < size-1; ++i) {
-      if(string[i] == to_find)
+      if(data[i] == to_find)
         ++cnt;
     }
     fwrite(&cnt, sizeof(unsigned long), 1, stdout);
     return 0;
   }
   ";
-  let mut coord = ClusterCoordinator::new(program.to_string(), 65535);
+  let mut coord = ClusterCoordinator::new(program, 65535);
   let mut tasks = Vec::new();
   for _ in 0..(processors_quantity - 1) {
     let mut buf = file.readn(block_size);
-    buf.insert(0, character_to_count as u8);
+    buf.push(character_to_count as u8);
     tasks.push(coord.add_task(buf));
-    println!("Task #{}", tasks.last().unwrap());
   }
   let mut buf = file.readn(last_block_size);
-  buf.insert(0, character_to_count as u8);
+  buf.push(character_to_count as u8);
   tasks.push(coord.add_task(buf));
 
-  let mut extracted = Vec::new();
-  while extracted.len() != processors_quantity as usize {
-    match coord.extract_computed() {
-      Some(mut res) => extracted.append(&mut res),
-      None => (),
+  let mut cnt = 0u64;
+  let mut finished = 0u64;
+  while finished != processors_quantity {
+    if let Some(extracted) = coord.extract_computed() {
+      let mut percentage = finished * 100 / processors_quantity;
+      print!("{}", "\r".repeat((percentage + 4) as usize));
+      finished += extracted.len() as u64;
+      percentage = finished * 100 / processors_quantity;
+      print!(
+        "{:3}% {}",
+        percentage,
+        "\u{25AE}".repeat(percentage as usize)
+      );
+      for task in extracted {
+        let res: &[u8] = &task.result.unwrap();
+        cnt += u64::from_le_bytes(match res.try_into() {
+          Ok(res) => res,
+          Err(_) => error_and_exit_app!("Error converting result to u64"),
+        });
+      }
     };
   }
-  let mut cnt = 0u64;
-  for task in extracted {
-    let res = &task.result.unwrap()[..];
-    cnt += u64::from_le_bytes(match res.try_into() {
-      Ok(res) => res,
-      Err(_) => error_and_exit_app!("Error converting result to u64"),
-    });
-  }
-  println!("Result is: {}", cnt);
+  greenln!("\nResult is: {}", cnt);
   coord.terminate();
   sleep(Duration::from_micros(500));
 }
