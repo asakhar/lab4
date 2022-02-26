@@ -122,24 +122,12 @@ enum HostCommand {
   Terminate = 2,
 }
 
-fn write_data(stream: &mut TcpStream, data: &[u8], program: &[u8]) -> bool {
-  if let Err(why) = stream.write_all(&program.len().to_le_bytes()) {
-    redln!("Error writing program length to host: {}", why);
-    return false;
-  }
-  if let Err(why) = stream.write_all(program) {
-    redln!("Error writing program to host: {}", why);
-    return false;
-  }
-  if let Err(why) = stream.write_all(&data.len().to_le_bytes()) {
-    redln!("Error writing data length to host: {}", why);
-    return false;
-  }
-  if let Err(why) = stream.write_all(&data) {
-    redln!("Error writing data to host: {}", why);
-    return false;
-  }
-  true
+fn write_data(stream: &mut TcpStream, data: &[u8], program: &[u8]) -> Result<(), std::io::Error> {
+  stream.write_all(&program.len().to_le_bytes())?;
+  stream.write_all(program)?;
+  stream.write_all(&data.len().to_le_bytes())?;
+  stream.write_all(&data)?;
+  Ok(())
 }
 
 macro_rules! sizeof {
@@ -148,18 +136,12 @@ macro_rules! sizeof {
   };
 }
 
-fn read_results(stream: &mut TcpStream) -> Option<Vec<u8>> {
+fn read_results(stream: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
   let mut size_buf = [0u8; sizeof!(usize)];
-  if let Err(why) = stream.read_exact(&mut size_buf) {
-    redln!("Error reading size from stream: {}", why);
-    return None;
-  };
+  stream.read_exact(&mut size_buf)?;
   let mut buf = vec![0u8; usize::from_le_bytes(size_buf)];
-  if let Err(why) = stream.read_exact(&mut buf) {
-    redln!("Error reading results from stream: {}", why);
-    return None;
-  };
-  Some(buf)
+  stream.read_exact(&mut buf)?;
+  Ok(buf)
 }
 
 fn handle_client(
@@ -189,17 +171,23 @@ fn handle_client(
     }
   };
   std::thread::spawn(move || {
-    if !write_data(&mut stream, &task.data, program.as_bytes()) {
+    if let Err(why) = write_data(&mut stream, &task.data, program.as_bytes()) {
+      redln!("Error writing data to host: {}", why);
       tasks.push_idle(task);
       return;
     };
     stream
       .set_read_timeout(Some(Duration::from_secs(120)))
       .unwrap_or_default();
-    task.result = read_results(&mut stream);
-    match task.result {
-      None => tasks.push_idle(task),
-      Some(_) => tasks.push_succeeded(task),
+    match read_results(&mut stream) {
+      Err(why) => {
+        redln!("Error reading result from host: {}", why);
+        tasks.push_idle(task)
+      }
+      Ok(res) => {
+        task.result = Some(res);
+        tasks.push_succeeded(task)
+      }
     };
   });
 }
@@ -233,10 +221,12 @@ impl ClusterCoordinator {
           }
           Err(why) => {
             redln!("Error: {}", why);
+            if is_terminated.load(Ordering::Relaxed) {
+              break;
+            }
           }
         }
       }
-      drop(listener);
     }));
     result
   }
