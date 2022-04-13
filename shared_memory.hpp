@@ -11,7 +11,7 @@
 template <typename T> class SharedMem {
 public:
   explicit SharedMem(size_t size) : m_size{size} {
-    m_fd = open(".dunder_file", O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
+    m_fd = open(".dunder_file", O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
     if (m_fd == -1) {
       printError("Failed to open shared file", errno);
       exit(1);

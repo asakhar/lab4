@@ -65,6 +65,14 @@ int main(int argc, char *argv[], char * /*env*/[]) {
       usage(argc, argv);
     }
   }
+  {
+    int fd = open(argv[1], O_RDWR);
+    if(fd == -1) {
+      printError("Invalid file provided", errno);
+      exit(1);
+    }
+    close(fd);
+  }
   if (processorsQuantity > (fileSize >> 2)) {
     std::cout
         << "Quantity of processes you entered (" << processorsQuantity

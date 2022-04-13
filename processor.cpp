@@ -47,6 +47,10 @@ int main(int argc, char *argv[], char * /*env*/[]) {
   SharedMem<size_t> sharedMem(fd);
   std::ifstream file{fileName};
   file.seekg(offset, std::ios_base::beg);
+  if(file.bad()) {
+    std::cerr << "Cannot open file\n";
+    _exit(1);
+  }
   for(size_t i = 0; i < blockSize; ++i) {
     auto character = file.get();
     if(character == searchingFor)
