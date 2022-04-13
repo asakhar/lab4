@@ -20,7 +20,8 @@ int main(int argc, char const *argv[]) {
     DWORD const access = GENERIC_READ | GENERIC_WRITE;
     DWORD const pipeMode = OPEN_EXISTING;
     std::string const pipeName(argv[1]);
-    if ((inout = CreateFile(TEXT(pipeName.c_str()), access, 0, NULL, pipeMode, 0, NULL)) == INVALID_HANDLE_VALUE) {
+    if ((inout = CreateFile(TEXT(pipeName.c_str()), access, 0, NULL, pipeMode,
+                            0, NULL)) == INVALID_HANDLE_VALUE) {
       printError("Cannot create pipe", GetLastError());
       ExitProcess(1);
     }
@@ -29,21 +30,28 @@ int main(int argc, char const *argv[]) {
     ExitProcess(1);
   }
   auto fileNameSize = readObject<size_t>(inout);
-  if (fileNameSize < 1) ExitProcess(1);
+  if (fileNameSize < 1)
+    ExitProcess(1);
   auto fileNamePtr = readObject<char>(inout, fileNameSize);
-  if(!fileNamePtr) ExitProcess(1);
+  if (!fileNamePtr)
+    ExitProcess(1);
   auto blockSize = readObject<size_t>(inout);
-  if(blockSize < 1) ExitProcess(1);
+  if (blockSize < 1)
+    ExitProcess(1);
   auto searchingFor = readObject<char>(inout);
-  if(!searchingFor) ExitProcess(1);
+  if (!searchingFor)
+    ExitProcess(1);
   auto offset = readObject<size_t>(inout);
   std::ifstream file{fileNamePtr.get()};
-  if(!file.is_open()) ExitProcess(1);
+  if (!file.is_open()) {
+    ExitProcess(1);
+  }
   file.seekg(offset, std::ios_base::beg);
   size_t result = 0;
   for (size_t i = 0; i < blockSize; ++i) {
     auto character = file.get();
-    if (character == searchingFor) ++result;
+    if (character == searchingFor)
+      ++result;
   }
   writeObject(inout, result);
   CloseHandle(inout);

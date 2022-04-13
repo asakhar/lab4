@@ -4,6 +4,8 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string>
 #include <vector>
 #include <windows.h>
@@ -11,7 +13,7 @@
 #include "errors.hpp"
 #include "shared_memory.hpp"
 
-constexpr char const *processorPath = "Debug/processor.exe";
+constexpr char const *processorPath = "processor.exe";
 
 #define SV(str) str, strlen(str)
 
@@ -103,6 +105,15 @@ int main(int argc, char *argv[], char * /*env*/[]) {
   auto character = argv[3][0];
   off_t fileSize;
   {
+    {
+      FILE* fs;
+      if(fopen_s(&fs, argv[1], "r") != 0){
+        perror("Cannot open file");
+        exit(1);
+      }
+      fclose(fs);
+    }
+
     struct stat st;
     if (stat(argv[1], &st) == -1) {
       printError("Invalid file provided", errno);
